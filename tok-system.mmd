@@ -1,0 +1,69 @@
+erDiagram
+    USERS ||..o{ CONTS : "owns via owner_id"
+    CONTS ||..o| USERS : "selected via main_cont_id"
+    MONNAIES ||..o{ CONTS : "denominates"
+    CONTS ||..o{ FLOWS : "source via from_cont_id"
+    CONTS ||..o{ FLOWS : "destination via to_cont_id"
+    USERS ||--o{ ADMINS : "committee CO"
+    USERS ||--o{ ADMINS : "member PP"
+    USERS ||--o| TAX_VOTE : "voter PP"
+    TAX_VOTE ||--o{ TAX_ALLOCATION : "normalized allocations"
+    USERS ||--o{ TAX_ALLOCATION : "recipient committee CO"
+    MONNAIES ||..o{ STOKEX : "foreign currency via dol"
+    CONTS ||..o| STOKEX : "foreign account via dol_cont_id"
+    CONTS ||..o| STOKEX : "TOK account via tok_cont_id"
+    USERS {
+        uuid user_id PK
+        string user_type "PP or CO"
+        string name
+        integer main_cont_id FK,UK
+    }
+    CONTS {
+        integer cont_id PK
+        string cont_type "PP CO G RM X_DOL X_TOK"
+        string creation_timestamp "20 digits"
+        uuid owner_id FK
+        string sym FK
+        numeric amount
+        string name
+    }
+    MONNAIES {
+        string sym PK
+        numeric smallest_unit
+    }
+    FLOWS {
+        integer flow_id PK
+        string start_time "20 digits"
+        integer from_cont_id FK
+        integer to_cont_id FK
+        numeric velocity
+        float duration "includes inf"
+    }
+    ADMINS {
+        uuid comite_id PK,FK
+        uuid membre_id PK,FK
+    }
+    TAX_VOTE {
+        uuid membre_id PK,FK
+        numeric rate_vote "nullable"
+    }
+    TAX_ALLOCATION {
+        uuid membre_id PK,FK
+        uuid comite_id PK,FK
+        integer allocation_weight "proposed field"
+    }
+    TAX_HISTORY {
+        string timestamp PK "20 digits"
+        numeric k_tax
+    }
+    POPULATION {
+        integer year PK "includes sentinel 999999999"
+        bigint tot_pp
+    }
+    STOKEX {
+        string dol FK
+        integer dol_cont_id PK,FK
+        integer tok_cont_id FK,UK
+        numeric user_value
+        numeric user_degree
+    }
