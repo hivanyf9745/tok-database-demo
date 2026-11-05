@@ -9,6 +9,7 @@ erDiagram
     USERS ||--o| TAX_VOTE : "voter PP"
     TAX_VOTE ||--o{ TAX_ALLOCATION : "normalized allocations"
     USERS ||--o{ TAX_ALLOCATION : "recipient committee CO"
+    USERS |o..o{ AUDIT_EVENTS : "known actor"
     MONNAIES ||..o{ STOKEX : "foreign currency via dol"
     CONTS ||..o| STOKEX : "foreign account via dol_cont_id"
     CONTS ||..o| STOKEX : "TOK account via tok_cont_id"
@@ -50,7 +51,18 @@ erDiagram
     TAX_ALLOCATION {
         uuid membre_id PK,FK
         uuid comite_id PK,FK
-        integer allocation_weight "proposed field"
+        integer allocation_weight "nonnegative current weight"
+    }
+    AUDIT_EVENTS {
+        uuid event_id PK
+        timestamp occurred_at "source timezone must be established"
+        uuid actor_user_id FK "nullable - initiator if known"
+        string action
+        string entity_type
+        string entity_id "nullable - historical reference"
+        json details "parameters and known before-after values"
+        string source
+        integer source_line "nullable - imported log line"
     }
     TAX_HISTORY {
         string timestamp PK "20 digits"

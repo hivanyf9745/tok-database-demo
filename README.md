@@ -18,6 +18,7 @@ erDiagram
     USERS ||--o| TAX_VOTE : "voter PP"
     TAX_VOTE ||--o{ TAX_ALLOCATION : "normalized allocations"
     USERS ||--o{ TAX_ALLOCATION : "recipient committee CO"
+    USERS |o..o{ AUDIT_EVENTS : "known actor"
     MONNAIES ||..o{ STOKEX : "foreign currency via dol"
     CONTS ||..o| STOKEX : "foreign account via dol_cont_id"
     CONTS ||..o| STOKEX : "TOK account via tok_cont_id"
@@ -59,7 +60,18 @@ erDiagram
     TAX_ALLOCATION {
         uuid membre_id PK,FK
         uuid comite_id PK,FK
-        integer allocation_weight "proposed field"
+        integer allocation_weight "nonnegative current weight"
+    }
+    AUDIT_EVENTS {
+        uuid event_id PK
+        timestamp occurred_at "source timezone must be established"
+        uuid actor_user_id FK "nullable - initiator if known"
+        string action
+        string entity_type
+        string entity_id "nullable - historical reference"
+        json details "parameters and known before-after values"
+        string source
+        integer source_line "nullable - imported log line"
     }
     TAX_HISTORY {
         string timestamp PK "20 digits"
@@ -138,7 +150,65 @@ The log identifies TOK SYSTEM VERSION 2.0 and records `load`, `start_new_flow`, 
 - A committee is created with two members and then removed. The removed committee is absent from the later snapshot, so log references cannot all be required foreign keys to current users.
 - The two vote event timestamps exactly match entries in `tax_history`. This suggests vote changes can trigger coefficient updates, but there is no persistent event ID or member FK in `tax_history` establishing a relational join.
 
-The ERD therefore leaves the text log outside the relational entities. An optional future `AUDIT_EVENT` table would be a new design, not a recovered table. Population and tax history remain standalone entities because no explicit foreign keys connect them to the other files.
+The ERD now includes `AUDIT_EVENTS` as a new design for storing activity history. The source log remains evidence, not an existing database table. Population and tax history remain standalone entities because no explicit foreign keys connect them to the other files.
+
+## Added table designs
+
+These definitions extend the logical ERD. No database has been provisioned, no SQL migration has been executed, and no source records have been uploaded to this repository.
+
+### TAX_ALLOCATION
+
+One row stores one member's current allocation to one committee. This replaces committee UUID columns in the original vote matrix; it does not replace `TAX_VOTE.rate_vote`.
+
+| Field | Type | Required | Key / rule |
+|---|---|---|---|
+| `membre_id` | UUID | Yes | Composite PK; FK to `TAX_VOTE.membre_id`, which references a `USERS` member |
+| `comite_id` | UUID | Yes | Composite PK; FK to `USERS.user_id`, restricted to committee type `CO` |
+| `allocation_weight` | Integer | Yes | Nonnegative current weight; explicit zero is preserved |
+
+The pair `(membre_id, comite_id)` must be unique. Membership in `TAX_VOTE` requires a person of type `PP`; role constraints need application validation or database triggers beyond ordinary foreign keys. Proposed deletion behavior is RESTRICT for both parents, so removing a committee or voter requires an explicit allocation decision rather than silently deleting allocations.
+
+Import by unpivoting all six committee columns into 306 rows. Keep the 51 current rate-vote rows separately, preserving their nulls. A total weight of 1000 per member is observed, but remains a business rule to confirm, not a declared database constraint. If adopted, validate the complete member distribution within one transaction, not each row independently. Do not impose a 1000 maximum or convert weights into percentages until their semantics are confirmed.
+
+When a distribution changes, update its rows and append one `tax_allocation_changed` audit event in the same transaction. Use `entity_type = tax_allocation` and the member UUID as `entity_id` to identify the whole distribution; store committee IDs and old/new weights in `details`. This keeps the composite row keys explicit in the event details.
+
+### AUDIT_EVENTS
+
+One row records an action. This is an append-only history, separate from current entity state and from a financial ledger.
+
+| Field | Type | Required | Key / rule |
+|---|---|---|---|
+| `event_id` | UUID | Yes | PK; assigned by the application or importer |
+| `occurred_at` | Timestamp | Yes | Event time with microsecond precision; establish timezone handling before implementation |
+| `actor_user_id` | UUID | No | FK to `USERS.user_id`; the initiator, not automatically the affected member |
+| `action` | Text | Yes | Explicit action name, such as `tax_vote_changed` |
+| `entity_type` | Text | Yes | Target kind, such as `tax_vote`, `user`, `flow`, or `system` |
+| `entity_id` | Text | No | Historical target identifier; no FK to a live target table |
+| `details` | JSON object | Yes | Known parameters, related IDs, before/after values when available, and source evidence |
+| `source` | Text | Yes | Application identifier or original imported filename |
+| `source_line` | Integer | No | Positive physical line number in an imported log |
+
+Each event has zero or one known actor; each user may initiate many events. The actor FK uses RESTRICT on deletion: retain/deactivate users with attributed events rather than deleting them or rewriting history. `entity_id` deliberately has no FK because its target may have been deleted, may use a composite identifier, or may be outside the current snapshot. It is not interchangeable with `actor_user_id`.
+
+For imported lines, use a unique `(source, source_line)` pair to prevent duplicate imports; the importer must ensure source filenames identify immutable source files. Application events have a null `source_line` and are identified by `event_id`. Useful indexes are `occurred_at`, `(entity_type, entity_id, occurred_at)` and `(actor_user_id, occurred_at)`.
+
+Normal application access should permit insertion and reading but not updating or deleting audit rows. Corrections should be new events referring to the earlier `event_id`. Write a state change and its event in one database transaction. These are implementation requirements, not protections supplied by Mermaid itself.
+
+### Importing the existing activity log
+
+The six commands become six events; the version header is metadata rather than a seventh event. Preserve the original command, timestamp text and version in `details`. The log does not identify the initiating actor, so all imported `actor_user_id` values must remain null. Do not infer success, missing previous values, or an unrecorded flow ID from a command alone.
+
+| Logged command | Suggested action | Target and details |
+|---|---|---|
+| `load` | `system_load_requested` | System target; retain the supplied system argument |
+| `start_new_flow` | `flow_start_requested` | Flow target with null ID; preserve both account references and numeric arguments without guessing units |
+| `set_tax_rate_vote` (two entries) | `tax_vote_change_requested` | Affected member ID; preserve the requested vote value |
+| `add_new_comite` | `committee_create_requested` | Committee ID; preserve the supplied name and member list |
+| `remove_user` | `user_remove_requested` | Removed user ID; retain the other argument without inventing its role |
+
+The `requested` action names distinguish logged commands from verified completed changes. New application events written atomically after successful changes can use completed-action names such as `tax_vote_changed`.
+
+Convert `nan` to JSON null while preserving the original token in the raw command. The log supplies no timezone; do not label imported times as UTC without confirmation. A source timestamp can be staged as a timezone-unspecified timestamp until the original timezone is established. The text log alone is not a complete replay history or a record of every financial movement.
 
 ## Implementation details to confirm
 
